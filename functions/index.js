@@ -14,7 +14,6 @@ const {DateTime} = require("luxon");
 const logger = require("firebase-functions/logger");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
 const sgMail = require("@sendgrid/mail");
-require('dotenv').config({ path: '../.env' });
 
 const firebaseConfig = {
   apiKey: process.env.PUBLIC_FIREBASE_API_KEY,
