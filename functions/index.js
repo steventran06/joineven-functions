@@ -43,6 +43,16 @@ const getCurrentTimeStamp = () => {
   return DateTime.now().setZone("America/Los_Angeles").toISO();
 };
 
+const getDaysAgo = (date) => {
+  const seconds = Math.floor((new Date().getTime() - new Date(date).getTime()) / 1000);
+  const interval = seconds / 86400;
+  if (interval > 1) {
+    return Math.floor(interval);
+  } else {
+    return 0;
+  }
+};
+
 const addToCollection = async (collection, itemToAdd) => {
   await admin
       .firestore()
@@ -403,6 +413,94 @@ exports.checkForDeadPositions =
           logger.log(response[0].headers);
         });
   });
+
+exports.removeOldPositions =
+  onSchedule("every 24 hours", async (event) => {
+    const deletedPositions = [];
+    const deletedMutualInterest = [];
+    const unknownStatus = [];
+    await admin
+        .firestore()
+        .collection("mutualInterest")
+        .get()
+        .then( async (mIDocs) => {
+          // Gather all mutual interests
+          const allMutualInterests = mIDocs.docs.map((mI) => ({
+            ...mI.data(),
+            id: mI.id,
+          }));
+          await admin
+              .firestore()
+              .collection("position")
+              .get()
+              .then(async (posDocs)=>{
+                // Gather all positions
+                const positions = posDocs.docs.map((pos) => ({
+                  ...pos.data(),
+                  id: pos.id,
+                }));
+                for (const pos of positions) {
+                  // If position is older than 30 days, we will delete it
+                  if (getDaysAgo(pos.createdAt) >= 30) {
+                    await deleteItemInCollection("position", pos.id)
+                        .then(async () => {
+                          logger.log(`Position ${pos.id}: ${pos.company} - ${pos.name} - DELETED`);
+
+                          // We need to find all mutualInterest records
+                          // that were connected to this deleted position
+                          const mutualInterestMatch =
+                          allMutualInterests.filter(
+                              (mi) => mi.positionId === pos.id,
+                          );
+                          return Promise.all(
+                              mutualInterestMatch.map(async (miMatch) => {
+                                const candidateNotification = {
+                                  title: "Job Post Has Been Removed",
+                                  body: `We're just letting you know that the ${pos.name} position at ${pos.company} has been filled or cancelled. Please continue looking for new positions!`,
+                                  link: `https://app.joineven.io/user/positions`,
+                                };
+                                // For all matching mutualInterest records, we will delete them
+                                // and send a notification to any user that has express
+                                return await deleteItemInCollection("mutualInterest", miMatch.id)
+                                    .then( async () => {
+                                      logger.log(`Mutual Interest ${miMatch.id} - DELETED`);
+                                      deletedMutualInterest.push({
+                                        id: miMatch.id,
+                                        candidate: miMatch.candidateId,
+                                        position: miMatch.positionId,
+                                      });
+                                      logger.log(`Candidate ${miMatch.candidateId} - NOTIFIED: ${JSON.stringify(candidateNotification)}`);
+                                      return await sendNotification(
+                                          miMatch.candidateId,
+                                          candidateNotification,
+                                      );
+                                    });
+                              }),
+                          );
+                        });
+                  }
+                }
+              });
+        });
+    const deadJobs = {
+      to: "team@joineven.io",
+      from: "steven@joineven.io",
+      templateId: "d-03a0eed2788f470284cb95e1806204d2",
+      dynamicTemplateData: {
+        unknownStatus,
+        deletedPositions,
+        deletedMutualInterest,
+      },
+    };
+
+    sgMail
+        .send(deadJobs)
+        .then((response) => {
+          logger.log(response[0].statusCode);
+          logger.log(response[0].headers);
+        });
+  });
+
 
 exports.sendRecommendations =
   // Monday and Wednesdays
